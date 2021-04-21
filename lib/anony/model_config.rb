@@ -5,6 +5,8 @@ require "active_support/core_ext/module/delegation"
 require_relative "./strategies/destroy"
 require_relative "./strategies/overwrite"
 
+require_relative "./audit_logs/audited/config"
+
 module Anony
   class ModelConfig
     # @api private
@@ -29,6 +31,7 @@ module Anony
     def initialize(model_class, &block)
       @model_class = model_class
       @strategy = UndefinedStrategy.new
+      @audit_log_config = nil
       @skip_filter = nil
       instance_exec(&block) if block
     end
@@ -41,10 +44,30 @@ module Anony
     def apply(instance)
       return Result.skipped if @skip_filter && instance.instance_exec(&@skip_filter)
 
-      @strategy.apply(instance)
+      result = nil
+
+      if @audit_log_config
+        # Do not generate an audit log entry when anonymising the record.
+        @audit_log_config.skip_auditing do
+          result = @strategy.apply(instance)
+        end
+
+        result.audit_log_changes = @audit_log_config.apply(instance)
+      else
+        result = @strategy.apply(instance)
+      end
+
+      result
     end
 
-    delegate :valid?, :validate!, to: :@strategy
+    def valid?
+      @strategy.valid? && (@audit_log_config ? @audit_log_config.valid? : true)
+    end
+
+    def validate!
+      @strategy.validate!
+      @audit_log_config&.validate!
+    end
 
     # Use the deletion strategy instead of anonymising individual fields. This method is
     # incompatible with the fields strategy.
@@ -84,6 +107,17 @@ module Anony
       end
 
       @strategy = Strategies::Overwrite.new(@model_class, &block)
+    end
+
+    def audit_log(audit_log_extension, &block)
+      # TODO: Make use of a registry where extension gems can register themselves
+      # rather than this hard-coded case statement.
+      case audit_log_extension
+      when :audited
+        @audit_log_config = AuditLogs::Audited::Config.new(@model_class, &block)
+      else
+        raise UnsupportedAuditLogException, audit_log_extension
+      end
     end
 
     # Prevent any anonymisation strategy being applied when the provided block evaluates
