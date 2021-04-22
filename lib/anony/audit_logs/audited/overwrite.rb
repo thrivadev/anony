@@ -11,7 +11,7 @@ module Anony
       #
       # @example
       #   anonymise do
-      #     audit_log(:audited) do
+      #     audit_log do
       #       overwrite do
       #       end
       #     end
@@ -39,12 +39,6 @@ module Anony
 
         def validate!
           raise FieldException, unhandled_fields if unhandled_fields.any?
-        end
-
-        def skip_auditing
-          @model_class.without_auditing do
-            yield
-          end
         end
 
         # Apply the Overwrite strategy on the model instance, which applies each of the

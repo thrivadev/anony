@@ -6,6 +6,7 @@ require_relative "./strategies/destroy"
 require_relative "./strategies/overwrite"
 
 require_relative "./audit_logs/audited/config"
+require_relative "./audit_logs/audited/audit_bypasser"
 
 module Anony
   class ModelConfig
@@ -31,6 +32,7 @@ module Anony
     def initialize(model_class, &block)
       @model_class = model_class
       @strategy = UndefinedStrategy.new
+      @audit_bypasser = resolve_audit_bypasser
       @audit_log_config = nil
       @skip_filter = nil
       instance_exec(&block) if block
@@ -46,15 +48,17 @@ module Anony
 
       result = nil
 
-      if @audit_log_config
+      if @audit_bypasser
         # Do not generate an audit log entry when anonymising the record.
-        @audit_log_config.skip_auditing do
+        @audit_bypasser.without_auditing do
           result = @strategy.apply(instance)
         end
-
-        result.audit_log_changes = @audit_log_config.apply(instance)
       else
         result = @strategy.apply(instance)
+      end
+
+      if @audit_log_config
+        result.audit_log_changes = @audit_log_config.apply(instance)
       end
 
       result
@@ -109,12 +113,14 @@ module Anony
       @strategy = Strategies::Overwrite.new(@model_class, &block)
     end
 
-    def audit_log(audit_log_extension, &block)
+    def audit_log(&block)
       # TODO: Make use of a registry where extension gems can register themselves
       # rather than this hard-coded case statement.
-      case audit_log_extension
+      case detect_audit_log_gem
       when :audited
         @audit_log_config = AuditLogs::Audited::Config.new(@model_class, &block)
+      when nil
+        # No-op
       else
         raise UnsupportedAuditLogException, audit_log_extension
       end
@@ -131,6 +137,30 @@ module Anony
       raise ArgumentError, "Block required for :skip_if" unless if_condition
 
       @skip_filter = if_condition
+    end
+
+    private
+
+    # Attempts to detect the presence of an audit-related gems in the model class
+    def detect_audit_log_gem
+      case
+      when @model_class.included_modules.include?(Audited::Auditor::AuditedInstanceMethods)
+        :audited
+      else
+        nil
+      end
+    end
+
+    def resolve_audit_bypasser
+      gem = detect_audit_log_gem
+      case gem
+      when :audited
+        AuditLogs::Audited::AuditBypasser.new(@model_class)
+      when nil
+        nil
+      else
+        raise ArgumentError, "No audit bypasser class specified for audit gem #{gem}"
+      end
     end
   end
 end

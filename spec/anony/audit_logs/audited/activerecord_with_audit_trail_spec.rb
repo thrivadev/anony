@@ -7,7 +7,7 @@ require "anony/rspec_shared_examples"
 require_relative "../../helpers/database"
 
 RSpec.context "ActiveRecord integration using Audited gem" do
-  class Employees < ActiveRecord::Base
+  class Employee < ActiveRecord::Base
     include Anony::Anonymisable
 
     self.table_name = :employees
@@ -24,7 +24,7 @@ RSpec.context "ActiveRecord integration using Audited gem" do
         with_strategy(:company_name) { |old| "anonymised-#{old}" }
       end
 
-      audit_log(:audited) do
+      audit_log do
         overwrite do
           with_strategy 'REDACTED', :first_name
           nilable :last_name
@@ -37,8 +37,10 @@ RSpec.context "ActiveRecord integration using Audited gem" do
     end
   end
 
+  let(:klass) { Employee }
+
   subject(:instance) do
-    Employees.create(first_name: "William", last_name: "Gates", company_name: "Microsoft")
+    klass.create(first_name: "William", last_name: "Gates", company_name: "Microsoft")
   end
 
   it_behaves_like "overwritten anonymisable model"
@@ -107,6 +109,57 @@ RSpec.context "ActiveRecord integration using Audited gem" do
           and change { instance.audits.last.audited_changes['first_name'].second }.from('John').to('REDACTED').
             and change { instance.audits.last.audited_changes['last_name'].first }.from('Gates').to(nil).
               and change { instance.audits.last.audited_changes['last_name'].second }.from('Smith').to(nil)
+    end
+  end
+
+  context "with no audit log strategy" do
+    class EmployeeWithoutAuditAnonymisation < ActiveRecord::Base
+      include Anony::Anonymisable
+
+      self.table_name = :employees
+
+      audited
+
+      anonymise do
+        overwrite do
+          hex :first_name
+          nilable :last_name
+          email :email_address
+          phone_number :phone_number
+          current_datetime :onboarded_at
+          with_strategy(:company_name) { |old| "anonymised-#{old}" }
+        end
+      end
+    end
+
+    let(:klass) { EmployeeWithoutAuditAnonymisation }
+
+    context "with updates to record" do
+      before do
+        instance.update!(first_name: "John", last_name: "Smith")
+      end
+
+      it "should have an audit entry for create and update" do
+        expect(instance.audits.size).to eq(2)
+      end
+
+      it "skips creation of audit entry on anonymisation" do
+        expect { instance.anonymise! }.to change(instance.audits, :size).by(0)
+      end
+
+      it "leaves create audit entries untouched" do
+        expect { instance.anonymise! }.
+          to not_change { instance.audits.first.audited_changes['first_name'] }.
+            and not_change { instance.audits.first.audited_changes['last_name'] }
+      end
+
+      it "leaves update audit entries untouched" do
+        expect { instance.anonymise! }.
+          to not_change { instance.audits.last.audited_changes['first_name'].first }.
+            and not_change { instance.audits.last.audited_changes['first_name'].second }.
+              and not_change { instance.audits.last.audited_changes['last_name'].first }.
+                and not_change { instance.audits.last.audited_changes['last_name'].second }
+      end
     end
   end
 end
